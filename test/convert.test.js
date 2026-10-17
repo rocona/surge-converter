@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { convertSubscription } from '../src/convert.js';
 import { fetchSubscription, validateSourceUrl } from '../src/fetch-source.js';
+import { buildManagedConfigUrl, prependManagedConfig } from '../src/managed-config.js';
 
 function vmessLink(name = 'VMess WebSocket') {
   const payload = {
@@ -160,4 +161,19 @@ Proxy = select, Trojan Node, VMess Node
   assert.match(result.config, /^VMess Node = vmess, vm\.example\.net, 443/m);
   assert.doesNotMatch(result.config, /\[Proxy\]/);
   assert.match(result.fullConfig, /\[Proxy\]\nTrojan Node = trojan/);
+});
+
+test('prepends a Surge managed-config directive to full output', () => {
+  const endpoint = buildManagedConfigUrl({
+    protocol: 'https',
+    host: 'surge-converter.zeabur.app',
+    pathname: '/',
+    search: '?url=https%3A%2F%2Fexample.com%2Fsubscription',
+  });
+  const output = prependManagedConfig('[General]\nloglevel = notify\n', endpoint);
+
+  assert.equal(
+    output,
+    '#!MANAGED-CONFIG https://surge-converter.zeabur.app?url=https%3A%2F%2Fexample.com%2Fsubscription interval=43200 strict=true\n[General]\nloglevel = notify\n',
+  );
 });

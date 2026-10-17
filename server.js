@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { convertSubscription, ConversionError } from './src/convert.js';
 import { fetchSubscription, SourceFetchError } from './src/fetch-source.js';
+import { buildManagedConfigUrl, prependManagedConfig } from './src/managed-config.js';
 
 const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '0.0.0.0';
@@ -63,7 +64,15 @@ const server = createServer(async (request, response) => {
       'x-conversion-skipped': String(result.skipped),
       ...(skippedSummary ? { 'x-conversion-skipped-protocols': skippedSummary } : {}),
     });
-    return response.end(request.method === 'HEAD' ? undefined : fullConfig ? result.fullConfig : result.config);
+    const output = fullConfig
+      ? prependManagedConfig(result.fullConfig, buildManagedConfigUrl({
+        protocol: forwardedProtocol(request),
+        host: forwardedHost(request),
+        pathname: requestUrl.pathname,
+        search: requestUrl.search,
+      }))
+      : result.config;
+    return response.end(request.method === 'HEAD' ? undefined : output);
   } catch (error) {
     const status = error instanceof SourceFetchError || error instanceof ConversionError ? error.status : 500;
     const message = error instanceof SourceFetchError || error instanceof ConversionError
@@ -85,6 +94,21 @@ function sendText(response, status, message) {
     'referrer-policy': 'no-referrer',
   });
   response.end(`${message}\n`);
+}
+
+function forwardedProtocol(request) {
+  const forwarded = String(request.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  if (forwarded === 'http' || forwarded === 'https') return forwarded;
+  return request.socket.encrypted ? 'https' : 'http';
+}
+
+function forwardedHost(request) {
+  return String(request.headers['x-forwarded-host'] || request.headers.host || 'localhost')
+    .split(',')[0]
+    .trim();
 }
 
 function indexHtml() {

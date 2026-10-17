@@ -28,7 +28,7 @@ https://你的-zeabur-域名/?url=https%3A%2F%2F订阅地址
 
 ## 在 Surge 中使用
 
-根路径返回可直接导入的最小完整配置，包含 `[General]`、`[Proxy]`、`[Proxy Group]` 和 `[Rule]`：
+根路径返回可直接导入的最小完整配置，顶部带有 `#!MANAGED-CONFIG` 指令（默认每 12 小时刷新，`strict=true`），并包含 `[General]`、`[Proxy]`、`[Proxy Group]` 和 `[Rule]`：
 
 ```text
 https://你的-zeabur-域名/?url=编码后的订阅地址
