@@ -139,3 +139,25 @@ test('accepts a direct share link without fetching it', async () => {
   assert.equal(result.converted, 1);
   assert.match(result.config, /Direct node = vmess/);
 });
+
+test('extracts nodes from an existing Surge configuration', () => {
+  const source = `#!MANAGED-CONFIG https://example.com/sub interval=43200
+[General]
+loglevel = notify
+
+[Proxy]
+Trojan Node = trojan, edge.example.net, 443, password=secret, sni=edge.example.net
+VMess Node = vmess, vm.example.net, 443, username=11111111-2222-4333-8444-555555555555, ws=true
+
+[Proxy Group]
+Proxy = select, Trojan Node, VMess Node
+`;
+  const result = convertSubscription(source);
+
+  assert.equal(result.total, 2);
+  assert.equal(result.converted, 2);
+  assert.match(result.config, /^Trojan Node = trojan, edge\.example\.net, 443/m);
+  assert.match(result.config, /^VMess Node = vmess, vm\.example\.net, 443/m);
+  assert.doesNotMatch(result.config, /\[Proxy\]/);
+  assert.match(result.fullConfig, /\[Proxy\]\nTrojan Node = trojan/);
+});
