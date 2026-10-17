@@ -9,6 +9,9 @@ export function convertSubscription(body) {
   const raw = String(body ?? '').replace(/^\uFEFF/, '').trim();
   if (!raw) throw new ConversionError('The source returned an empty subscription.', 422);
 
+  const surgeProxies = parseSurgeProxySection(raw);
+  if (surgeProxies) return convertSurgeProxies(surgeProxies);
+
   const candidates = [raw];
   const decoded = decodeBase64Subscription(raw);
   if (decoded && decoded !== raw) candidates.push(decoded);
@@ -22,6 +25,81 @@ export function convertSubscription(body) {
   }
 
   throw new ConversionError('Could not find supported share links or a Clash proxies list in the source.', 422);
+}
+
+function parseSurgeProxySection(text) {
+  const section = text.match(/(?:^|\n)\[Proxy\]\s*\r?\n([\s\S]*?)(?=\r?\n\[[^\]]+\]|$)/i);
+  if (!section) return null;
+
+  return section[1]
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'));
+}
+
+function convertSurgeProxies(lines) {
+  const entries = [];
+  const skippedByProtocol = {};
+
+  for (const line of lines) {
+    const match = line.match(/^([^=\r\n]+?)\s*=\s*([a-z0-9-]+)\s*,\s*(.+)$/i);
+    const protocol = String(match?.[2] ?? 'invalid').toLowerCase();
+    try {
+      if (!match || !['ss', 'vmess', 'trojan', 'hysteria2', 'tuic', 'tuic-v5', 'http', 'https', 'socks5'].includes(protocol)) {
+        bump(skippedByProtocol, protocol);
+        continue;
+      }
+      const name = safeName(match[1]);
+      if (!name) throw new Error('Invalid proxy name');
+      entries.push({ name, line: `${name} = ${protocol}, ${match[3].trim()}` });
+    } catch {
+      bump(skippedByProtocol, protocol);
+    }
+  }
+
+  return finishSurgeConversion(entries, skippedByProtocol, lines.length);
+}
+
+function finishSurgeConversion(entries, skippedByProtocol, total) {
+  if (!entries.length) {
+    const skipped = Object.entries(skippedByProtocol)
+      .map(([protocol, count]) => `${protocol}: ${count}`)
+      .join(', ');
+    throw new ConversionError(
+      skipped ? `No Surge-compatible nodes found. Skipped: ${skipped}.` : 'No Surge-compatible nodes found.',
+      422,
+    );
+  }
+
+  const config = entries.map(({ line }) => line).join('\n') + '\n';
+  return {
+    config,
+    fullConfig: formatSurgeConfigFromLines(entries),
+    names: entries.map(({ name }) => name),
+    total,
+    converted: entries.length,
+    skipped: total - entries.length,
+    skippedByProtocol,
+  };
+}
+
+function formatSurgeConfigFromLines(entries) {
+  const nodes = entries.map(({ line }) => line).join('\n');
+  const names = entries.map(({ name }) => name).join(', ');
+  return [
+    '[General]',
+    'loglevel = notify',
+    '',
+    '[Proxy]',
+    nodes,
+    '',
+    '[Proxy Group]',
+    `Proxy = select, ${names}, DIRECT`,
+    '',
+    '[Rule]',
+    'FINAL, Proxy',
+    '',
+  ].join('\n');
 }
 
 export class ConversionError extends Error {
