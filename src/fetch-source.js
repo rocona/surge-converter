@@ -76,7 +76,8 @@ export async function fetchSubscription(inputUrl) {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: {
           accept: 'text/plain, application/yaml, application/x-yaml, */*;q=0.5',
-          'user-agent': 'Surge-Node-Converter/1.0',
+          // Avoid provider-side Surge filtering so we can convert every compatible node ourselves.
+          'user-agent': 'Mozilla/5.0 (compatible; Proxy-Subscription-Converter/1.0)',
         },
         dispatcher,
       });
