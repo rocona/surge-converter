@@ -1,0 +1,25 @@
+{
+  "name": "surge-node-converter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Convert proxy subscriptions into Surge node lists and minimal configurations",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rocona/surge-converter.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "docker:build": "docker build -t surge-node-converter:local .",
+    "docker:publish": "bash scripts/publish-docker.sh"
+  },
+  "dependencies": {
+    "undici": "^7.16.0",
+    "yaml": "^2.8.1"
+  }
+}
