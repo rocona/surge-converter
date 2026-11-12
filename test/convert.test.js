@@ -24,13 +24,12 @@ test('converts supported share links and reports protocols Surge cannot use', ()
     vmessLink(),
     'trojan://p%40ss@edge.example.net:443?sni=front.example.net&type=ws&host=front.example.net&path=%2Fconnect#Trojan%20TLS',
     'hysteria2://secret@udp.example.net:8443?sni=udp.example.net&obfs=salamander&obfs-password=veil#Fast%20UDP',
-    'vless://11111111-2222-4333-8444-555555555555@vless.example.net:443?security=tls#VLESS%20TLS',
     'ssr://c29tZS1ub2Rl',
   ].join('\n');
 
   const result = convertSubscription(input);
-  assert.equal(result.total, 5);
-  assert.equal(result.converted, 4);
+  assert.equal(result.total, 4);
+  assert.equal(result.converted, 3);
   assert.equal(result.skipped, 1);
   assert.deepEqual(result.skippedByProtocol, { ssr: 1 });
   assert.match(result.config, /VMess WebSocket = vmess, vm\.example\.net, 443/);
@@ -39,11 +38,10 @@ test('converts supported share links and reports protocols Surge cannot use', ()
   assert.match(result.config, /Trojan TLS = trojan, edge\.example\.net, 443, password=p@ss/);
   assert.match(result.config, /Fast UDP = hysteria2, udp\.example\.net, 8443/);
   assert.match(result.config, /salamander-password=veil/);
-  assert.match(result.config, /VLESS TLS = vless, vless\.example\.net, 443, username=11111111-2222-4333-8444-555555555555, tls=true/);
   assert.doesNotMatch(result.config, /ssr/i);
   assert.match(result.fullConfig, /^\[General\]\nloglevel = notify/m);
   assert.match(result.fullConfig, /\[Proxy\]\nVMess WebSocket = vmess/);
-  assert.match(result.fullConfig, /\[Proxy Group\]\nProxy = select, VMess WebSocket, Trojan TLS, Fast UDP, VLESS TLS, DIRECT/);
+  assert.match(result.fullConfig, /\[Proxy Group\]\nProxy = select, VMess WebSocket, Trojan TLS, Fast UDP, DIRECT/);
   assert.match(result.fullConfig, /\[Rule\]\nFINAL, Proxy/);
 });
 
@@ -58,7 +56,7 @@ test('decodes a Base64 Shadowsocks subscription and supports SIP002 credentials'
   assert.match(result.config, /obfs-host=cdn\.example\.net/);
 });
 
-test('converts supported Clash YAML proxies including VLESS', () => {
+test('converts supported Clash YAML proxies and skips VLESS', () => {
   const source = `proxies:
   - name: Edge Vmess
     type: vmess
@@ -74,7 +72,7 @@ test('converts supported Clash YAML proxies including VLESS', () => {
       path: /ws
       headers:
         Host: cdn.example.net
-  - name: Not VLESS
+  - name: VLESS Node
     type: vless
     server: vless.example.net
     port: 443
@@ -87,12 +85,13 @@ test('converts supported Clash YAML proxies including VLESS', () => {
     password: secret
 `;
   const result = convertSubscription(source);
-  assert.equal(result.converted, 3);
-  assert.deepEqual(result.skippedByProtocol, {});
+  assert.equal(result.converted, 2);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(result.skippedByProtocol, { vless: 1 });
   assert.match(result.config, /Edge Vmess = vmess/);
   assert.match(result.config, /sni=edge\.example\.net/);
   assert.match(result.config, /ws-headers=Host:cdn\.example\.net/);
-  assert.match(result.config, /Not VLESS = vless, vless\.example\.net, 443, username=11111111-2222-4333-8444-555555555555/);
+  assert.doesNotMatch(result.config, /VLESS Node =/);
   assert.match(result.config, /SS Node = ss/);
 });
 
@@ -119,20 +118,24 @@ test('preserves flag and emoji sequences in node names', () => {
   assert.match(result.config, /^🇯🇵 _ Tokyo = socks5,/m);
 });
 
-test('maps VLESS REALITY, Vision, WebSocket and gRPC share-link parameters', () => {
+test('skips VLESS share links as unsupported', () => {
   const source = [
     'vless://11111111-2222-4333-8444-555555555555@reality.example.net:443?security=reality&pbk=test-public-key&sid=abcdef&sni=front.example.net&flow=xtls-rprx-vision#Reality',
     'vless://11111111-2222-4333-8444-555555555555@ws.example.net:443?type=ws&security=tls&host=cdn.example.net&path=%2Fvless#VLESS%20WS',
-    'vless://11111111-2222-4333-8444-555555555555@grpc.example.net:443?type=grpc&security=tls&serviceName=mygrpc&authority=grpc.example.net&mode=multi#VLESS%20gRPC',
-    'vless://11111111-2222-4333-8444-555555555555@xhttp.example.net:443?type=xhttp&security=tls#Unsupported',
+    vmessLink('Supported VMess'),
   ].join('\n');
   const result = convertSubscription(source);
 
-  assert.equal(result.converted, 3);
-  assert.deepEqual(result.skippedByProtocol, { vless: 1 });
-  assert.match(result.config, /Reality = vless, reality\.example\.net, 443, username=11111111-2222-4333-8444-555555555555, flow=xtls-rprx-vision, reality-public-key=test-public-key, reality-short-id=abcdef, sni=front\.example\.net/);
-  assert.match(result.config, /VLESS WS = vless, ws\.example\.net, 443, username=11111111-2222-4333-8444-555555555555, tls=true, ws=true, ws-path=\/vless, ws-headers=Host:cdn\.example\.net/);
-  assert.match(result.config, /VLESS gRPC = vless, grpc\.example\.net, 443, username=11111111-2222-4333-8444-555555555555, tls=true, grpc=true, grpc-service-name=mygrpc, grpc-authority=grpc\.example\.net, grpc-mode=multi/);
+  assert.equal(result.total, 3);
+  assert.equal(result.converted, 1);
+  assert.equal(result.skipped, 2);
+  assert.deepEqual(result.skippedByProtocol, { vless: 2 });
+  assert.match(result.config, /^Supported VMess = vmess/m);
+  assert.doesNotMatch(result.config, /= vless,/i);
+  assert.throws(
+    () => convertSubscription(source.split('\n').slice(0, 2).join('\n')),
+    error => error.status === 422 && /vless: 2/i.test(error.message),
+  );
 });
 
 test('converts AnyTLS share links and preserves the reuse setting', () => {
@@ -376,11 +379,11 @@ unused-key = type=openssh-private-key, base64=dGVzdA==
   const result = convertSubscription(source);
 
   assert.equal(result.total, 11);
-  assert.equal(result.converted, 10);
-  assert.equal(result.skipped, 1);
-  assert.deepEqual(result.skippedByProtocol, { ssr: 1 });
+  assert.equal(result.converted, 9);
+  assert.equal(result.skipped, 2);
+  assert.deepEqual(result.skippedByProtocol, { vless: 1, ssr: 1 });
   assert.equal(result.requiresFullConfig, true);
-  assert.match(result.config, /^VLESS = vless/m);
+  assert.doesNotMatch(result.config, /^VLESS =/m);
   assert.match(result.config, /^External = external/m);
   assert.doesNotMatch(result.config, /^SSR =/m);
   assert.match(result.fullConfig, /\[WireGuard office\]/);

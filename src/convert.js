@@ -11,7 +11,7 @@ const SUPPORTED_SS_METHODS = new Set([
 ]);
 const SURGE_PROXY_TYPES = new Set([
   'http', 'https', 'h2-connect', 'socks5', 'socks5-tls', 'ss', 'vmess', 'trojan', 'hysteria2', 'tuic', 'tuic-v5',
-  'snell', 'masque', 'anytls', 'vless', 'trust-tunnel', 'ssh', 'wireguard', 'tailscale', 'external',
+  'snell', 'masque', 'anytls', 'trust-tunnel', 'ssh', 'wireguard', 'tailscale', 'external',
 ]);
 
 export function convertSubscription(body) {
@@ -298,7 +298,6 @@ function parseShareLink(uri) {
   const protocol = uri.slice(0, uri.indexOf(':')).toLowerCase();
   if (protocol === 'vmess') return parseVmess(uri);
   if (protocol === 'ss') return parseShadowsocks(uri);
-  if (protocol === 'vless') return parseVless(uri);
   if (protocol === 'anytls') return parseAnyTls(uri);
   if (protocol === 'ssr') return null;
   if (protocol === 'trojan') return parseTrojan(uri);
@@ -336,61 +335,6 @@ function parseVmess(uri) {
   if (alpn) params.push(['alpn', alpn]);
 
   return makeProxy(settings.ps || settings.name, 'vmess', host, port, params);
-}
-
-function parseVless(uri) {
-  const url = new URL(uri);
-  const query = url.searchParams;
-  const userId = decodePart(url.username);
-  if (!userId) throw new Error('Missing VLESS user ID');
-  if ((query.get('encryption') || 'none').toLowerCase() !== 'none') throw new Error('Unsupported VLESS encryption');
-
-  const transport = String(query.get('type') || query.get('network') || 'tcp').toLowerCase();
-  const security = String(query.get('security') || (isTruthyParam(query.get('tls')) ? 'tls' : 'none')).toLowerCase();
-  if (!['tcp', 'raw', 'ws', 'grpc'].includes(transport)) throw new Error('Unsupported VLESS transport');
-  if (!['none', 'tls', 'reality'].includes(security)) throw new Error('Unsupported VLESS security');
-  if (transport === 'grpc' && security === 'none') throw new Error('VLESS gRPC requires TLS or REALITY');
-
-  const flow = String(query.get('flow') || '').toLowerCase();
-  if (flow && !['xtls-rprx-vision', 'xtls-rprx-vision-udp443'].includes(flow)) throw new Error('Unsupported VLESS flow');
-  if (flow && (!['tcp', 'raw'].includes(transport) || security === 'none')) throw new Error('VLESS Vision requires raw TCP with TLS or REALITY');
-
-  const params = [['username', safeText(userId)]];
-  if (flow) params.push(['flow', flow]);
-  if (security === 'tls') params.push(['tls', 'true']);
-  if (security === 'reality') {
-    const publicKey = query.get('pbk') || query.get('publicKey');
-    if (!publicKey) throw new Error('VLESS REALITY requires a public key');
-    params.push(['reality-public-key', safeText(publicKey)]);
-    const shortId = query.get('sid') || query.get('shortId');
-    if (shortId) {
-      if (!/^[a-f0-9]{1,16}$/i.test(shortId)) throw new Error('Invalid VLESS REALITY short ID');
-      params.push(['reality-short-id', shortId]);
-    }
-  }
-
-  const sni = query.get('sni') || query.get('peer') || query.get('servername');
-  if (sni) params.push(['sni', normalizeHost(sni)]);
-  if (security === 'tls' && isTruthyParam(query.get('allowInsecure') ?? query.get('insecure'))) {
-    params.push(['skip-cert-verify', 'true']);
-  }
-  const alpn = firstAlpn(query.get('alpn'));
-  if (alpn) params.push(['alpn', alpn]);
-
-  if (transport === 'ws') {
-    addWebSocketParams(params, query.get('path'), query.get('host'));
-  } else if (transport === 'grpc') {
-    params.push(['grpc', 'true']);
-    const serviceName = query.get('serviceName') || query.get('service-name');
-    const authority = query.get('authority');
-    const mode = String(query.get('mode') || '').toLowerCase();
-    if (serviceName) params.push(['grpc-service-name', safeText(serviceName)]);
-    if (authority) params.push(['grpc-authority', safeText(authority)]);
-    if (mode && mode !== 'gun' && mode !== 'multi') throw new Error('Unsupported VLESS gRPC mode');
-    if (mode === 'multi') params.push(['grpc-mode', 'multi']);
-  }
-
-  return makeProxy(decodePart(url.hash.slice(1)), 'vless', normalizeHost(url.hostname), normalizePort(url.port), params);
 }
 
 function parseAnyTls(uri) {
@@ -681,54 +625,6 @@ function parseClashProxy(proxy, index) {
       if (options.host) params.push(['obfs-host', normalizeHost(options.host)]);
     }
     return makeProxy(proxy.name, 'ss', host, port, params);
-  }
-
-  if (protocol === 'vless') {
-    const network = String(proxy.network || 'tcp').toLowerCase();
-    const reality = proxy['reality-opts'] ?? {};
-    const realityKey = reality['public-key'] || reality.publicKey;
-    if ((proxy.encryption || 'none').toLowerCase() !== 'none') throw new Error('Unsupported VLESS encryption');
-    if (proxy['reality-opts'] && !realityKey) throw new Error('VLESS REALITY requires a public key');
-    const security = realityKey ? 'reality' : (truthy(proxy.tls) ? 'tls' : 'none');
-    if (!['tcp', 'raw', 'ws', 'grpc'].includes(network)) throw new Error('Unsupported VLESS transport');
-    if (network === 'ws' && security === 'reality') throw new Error('VLESS WebSocket does not support REALITY');
-    if (network === 'grpc' && security === 'none') throw new Error('VLESS gRPC requires TLS or REALITY');
-
-    const params = [['username', safeText(proxy.uuid)]];
-    const flow = String(proxy.flow || '').toLowerCase();
-    if (flow && !['xtls-rprx-vision', 'xtls-rprx-vision-udp443'].includes(flow)) throw new Error('Unsupported VLESS flow');
-    if (flow && (!['tcp', 'raw'].includes(network) || security === 'none')) throw new Error('VLESS Vision requires raw TCP with TLS or REALITY');
-    if (flow) params.push(['flow', flow]);
-    if (security === 'tls') params.push(['tls', 'true']);
-    if (security === 'reality') {
-      params.push(['reality-public-key', safeText(realityKey)]);
-      const shortId = reality['short-id'] || reality.shortId;
-      if (shortId) {
-        if (!/^[a-f0-9]{1,16}$/i.test(String(shortId))) throw new Error('Invalid VLESS REALITY short ID');
-        params.push(['reality-short-id', safeText(shortId)]);
-      }
-    }
-    if (proxy.servername || proxy.sni) params.push(['sni', normalizeHost(proxy.servername || proxy.sni)]);
-    if (security === 'tls' && truthy(proxy['skip-cert-verify'])) params.push(['skip-cert-verify', 'true']);
-    const alpn = firstAlpn(proxy.alpn);
-    if (alpn) params.push(['alpn', alpn]);
-
-    if (network === 'ws') {
-      const ws = proxy['ws-opts'] ?? {};
-      addWebSocketParams(params, ws.path, ws.headers?.Host || ws.headers?.host);
-    } else if (network === 'grpc') {
-      const grpc = proxy['grpc-opts'] ?? {};
-      params.push(['grpc', 'true']);
-      const serviceName = grpc['grpc-service-name'] || grpc['service-name'] || proxy['grpc-service-name'];
-      const authority = grpc.authority || proxy['grpc-authority'];
-      if (serviceName) params.push(['grpc-service-name', safeText(serviceName)]);
-      if (authority) params.push(['grpc-authority', safeText(authority)]);
-      const mode = String(grpc.mode || proxy['grpc-mode'] || '').toLowerCase();
-      if (mode && mode !== 'gun' && mode !== 'multi') throw new Error('Unsupported VLESS gRPC mode');
-      if (mode === 'multi') params.push(['grpc-mode', 'multi']);
-    }
-
-    return makeProxy(proxy.name, 'vless', host, port, params);
   }
 
   if (protocol === 'anytls') {
