@@ -8,6 +8,7 @@
 - Clash YAML：以上协议，以及 Snell、MASQUE、Trust Tunnel、SSH、WireGuard、H2 CONNECT、HTTP、SOCKS5、SOCKS5-TLS 节点。
 - Surge 配置：读取 `[Proxy]` 中 Surge 官方支持的节点类型；完整配置模式会保留 WireGuard/Tailscale 配置段和 SSH 私钥所需的 Keystore 项。
 - 转换阶段会过滤流量/到期/续费信息、客户端下载说明等非节点项；真实节点名称和 Surge 节点参数保持原样，不添加机场前缀。
+- Hysteria2 分享链接中的 `pinSHA256` 会映射到 Surge 的 `server-cert-fingerprint-sha256`，保留自签证书节点所需的证书校验信息。
 - VLESS 暂不支持，订阅中的 VLESS 节点会跳过。
 - Surge 不支持的协议会跳过；节点字段或传输方式不能安全映射时也会跳过。源订阅没有可转换节点时，会返回 HTTP 422 和简短说明，不会返回空节点列表。
 

@@ -463,6 +463,12 @@ function parseHysteria2(uri) {
   const sni = query.get('sni') || query.get('peer') || query.get('servername');
   if (sni) params.push(['sni', normalizeHost(sni)]);
   if (isTruthyParam(query.get('insecure') ?? query.get('allowInsecure'))) params.push(['skip-cert-verify', 'true']);
+  const certificatePin = query.get('pinSHA256') || query.get('server-cert-fingerprint-sha256');
+  if (certificatePin) {
+    const fingerprint = certificatePin.replace(/:/g, '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('Invalid SHA-256 certificate fingerprint');
+    params.push(['server-cert-fingerprint-sha256', fingerprint]);
+  }
   const alpn = firstAlpn(query.get('alpn'));
   if (alpn) params.push(['alpn', alpn]);
 
@@ -889,7 +895,7 @@ function safeText(value) {
 function safeName(value) {
   const text = String(value ?? '')
     .replace(/[\r\n\u0000]/g, ' ')
-    .replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u200D\u{E0020}-\u{E007F}._ ()+-]/gu, '_')
+    .replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u200D\u{E0020}-\u{E007F}._ ()+\/-]/gu, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);

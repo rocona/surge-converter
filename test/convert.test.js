@@ -437,6 +437,17 @@ test('filters notices from Clash and share links while retaining real client-com
   assert.deepEqual(links.names, ['🇹🇼台湾家宽1-GPT']);
 });
 
+test('preserves Hysteria2 certificate pins and slashes in share-link names', () => {
+  const fingerprint = 'ab'.repeat(32);
+  const source = `hysteria2://fixture-secret@hy.example.net:443?sni=hy.example.net&insecure=false&pinSHA256=${fingerprint}&mport=50000-53000#AI%2F%E6%B5%81%E5%AA%92%E4%BD%93`;
+  const result = convertSubscription(source);
+  assert.deepEqual(result.names, ['AI/流媒体']);
+  assert.match(result.config, new RegExp(`server-cert-fingerprint-sha256=${fingerprint}`));
+  assert.match(result.config, /port-hopping=50000-53000/);
+  assert.doesNotMatch(result.config, /skip-cert-verify=true/);
+  assert.throws(() => convertSubscription(source.replace(fingerprint, 'invalid')), /No Surge-compatible nodes/);
+});
+
 test('prepends a Surge managed-config directive to full output', () => {
   const endpoint = buildManagedConfigUrl({
     protocol: 'https',
