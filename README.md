@@ -4,10 +4,11 @@
 
 ## 支持范围
 
-- 分享链接：Shadowsocks、VMess、Trojan、Hysteria2、TUIC。
-- Clash YAML：以上协议，以及 HTTP、SOCKS5 节点。
-- 其他协议和不能安全映射的传输方式会跳过；例如 VLESS、SSR、VMess gRPC。
-- 如果源订阅没有可转换的节点，会返回 HTTP 422 和简短说明，不会返回空节点列表。
+- 分享链接：Shadowsocks、VMess、VLESS、Trojan、Hysteria2、TUIC、AnyTLS。
+- Clash YAML：以上协议，以及 Snell、MASQUE、Trust Tunnel、SSH、WireGuard、H2 CONNECT、HTTP、SOCKS5、SOCKS5-TLS 节点。
+- Surge 配置：读取 `[Proxy]` 中 Surge 官方支持的节点类型；完整配置模式会保留 WireGuard/Tailscale 配置段和 SSH 私钥所需的 Keystore 项。
+- VLESS 支持 RAW/TCP、WebSocket、gRPC 及 TLS/REALITY。XHTTP、HTTPUpgrade、mKCP、VLESS Encryption 和不兼容的传输组合会跳过。
+- Surge 不支持的协议会跳过；节点字段或传输方式不能安全映射时也会跳过。源订阅没有可转换节点时，会返回 HTTP 422 和简短说明，不会返回空节点列表。
 
 节点能否连接仍取决于 Surge 版本及节点参数。转换器不修改节点信息，也不提供代理服务。
 
@@ -24,7 +25,9 @@
 https://你的-zeabur-域名/?url=https%3A%2F%2F订阅地址
 ```
 
-`url` 参数必须经过 URL 编码。根路径（`/?url=...`）返回完整 Surge 配置；`/node?url=...` 只返回节点定义。为了兼容旧用法，`/sub?url=...` 和 `/convert?url=...` 仍然是节点列表别名。`/healthz` 可用于健康检查。订阅源可为 HTTP(S) 地址，也可为一个 `ss://`、`vmess://`、`trojan://`、`hysteria2://` 或 `tuic://` 分享链接。
+`url` 参数必须经过 URL 编码。根路径（`/?url=...`）返回完整 Surge 配置；`/node?url=...` 只返回节点定义。为了兼容旧用法，`/sub?url=...` 和 `/convert?url=...` 仍然是节点列表别名。`/healthz` 可用于健康检查。订阅源可为 HTTP(S) 地址，也可为支持的 `ss://`、`vmess://`、`vless://`、`anytls://`、`trojan://`、`hysteria2://` 或 `tuic://` 分享链接。
+
+如果 Surge 节点引用了 WireGuard/Tailscale 配置段或 SSH 私钥，使用根路径生成完整配置；`/node` 不能承载这些附属配置，会返回 HTTP 422。
 
 ## 在 Surge 中使用
 

@@ -31,7 +31,7 @@ export class SourceFetchError extends Error {
 }
 
 export function isShareLink(value) {
-  return /^(?:ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic):\/\//i.test(value);
+  return /^(?:ss|ssr|vmess|vless|anytls|trojan|hysteria2|hy2|tuic):\/\//i.test(value);
 }
 
 export function validateSourceUrl(value) {

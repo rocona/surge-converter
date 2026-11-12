@@ -48,6 +48,9 @@ const server = createServer(async (request, response) => {
     const body = await fetchSubscription(source);
     const result = convertSubscription(body);
     const fullConfig = isHome;
+    if (isNodeList && result.requiresFullConfig) {
+      return sendText(response, 422, 'This source contains policies that require additional Surge sections. Use /?url=<subscription-url> for the complete configuration.');
+    }
     const skippedSummary = Object.entries(result.skippedByProtocol)
       .map(([protocol, count]) => `${String(protocol).replace(/[^a-z0-9_-]/gi, '_').slice(0, 32)}=${count}`)
       .join(', ')
