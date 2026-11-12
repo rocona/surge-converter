@@ -65,6 +65,7 @@ const server = createServer(async (request, response) => {
       'x-conversion-total': String(result.total),
       'x-conversion-converted': String(result.converted),
       'x-conversion-skipped': String(result.skipped),
+      'x-conversion-filtered-by-name': String(result.filteredByName ?? 0),
       ...(skippedSummary ? { 'x-conversion-skipped-protocols': skippedSummary } : {}),
     });
     const output = fullConfig

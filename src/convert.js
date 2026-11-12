@@ -13,6 +13,9 @@ const SURGE_PROXY_TYPES = new Set([
   'http', 'https', 'h2-connect', 'socks5', 'socks5-tls', 'ss', 'vmess', 'trojan', 'hysteria2', 'tuic', 'tuic-v5',
   'snell', 'masque', 'anytls', 'trust-tunnel', 'ssh', 'wireguard', 'tailscale', 'external',
 ]);
+// Match subscription notices, not real node labels mentioning supported clients or AI services.
+const INFORMATIONAL_PROXY_NAME_PATTERN = /(?:剩余流量|距离下次重置|套餐到期|到期时间|流量重置|当前网址|续费(?:网址|地址|链接)|官网(?:网址|地址)|订阅(?:信息|地址|链接)|流量查询)|^(?:remain(?:ing)?(?:\s+traffic)?|expired?|reset)(?:\b|[_：:])/iu;
+const CLIENT_INSTRUCTION_PROXY_NAME_PATTERN = /^(?:(?:推荐(?:clash|karing|小火箭|客户端)|surge客户端不支持|若无[^,]*更换客户端)|(?:安卓|android|windows|电脑|pc|ios|iphone|ipad|mac|小火箭|shadowrocket|clash(?:meta|verge)?)[^,]*客户端)/iu;
 
 export function convertSubscription(body) {
   const raw = String(body ?? '').replace(/^\uFEFF/, '').trim();
@@ -67,6 +70,7 @@ function parseSurgeProxySection(text) {
 function convertSurgeProxies({ lines, sections }) {
   const entries = [];
   const skippedByProtocol = {};
+  let filteredByName = 0;
   const companionSectionNames = new Map([['wireguard', new Set()], ['tailscale', new Set()]]);
   const keystoreReferences = new Set();
   const keystore = sections.get('keystore');
@@ -76,6 +80,10 @@ function convertSurgeProxies({ lines, sections }) {
     const match = line.match(/^([^=\r\n]+?)\s*=\s*([a-z0-9-]+)\s*,\s*(.+)$/i);
     const protocol = String(match?.[2] ?? 'invalid').toLowerCase();
     try {
+      if (match && isInformationalProxyName(match[1])) {
+        filteredByName += 1;
+        continue;
+      }
       if (!match || !SURGE_PROXY_TYPES.has(protocol)) {
         bump(skippedByProtocol, protocol);
         continue;
@@ -100,8 +108,9 @@ function convertSurgeProxies({ lines, sections }) {
         keystoreReferences.add(keystoreName);
       }
 
-      const name = safeName(match[1]);
-      if (!name) throw new Error('Invalid proxy name');
+      // Native Surge names are already in Surge syntax; keep slashes, punctuation and length.
+      const name = match[1].trim();
+      if (!name || /[,\u0000-\u001F\u007F]/u.test(name)) throw new Error('Invalid proxy name');
       entries.push({ name, line: `${name} = ${protocol}, ${match[3].trim()}` });
     } catch {
       bump(skippedByProtocol, protocol);
@@ -120,7 +129,12 @@ function convertSurgeProxies({ lines, sections }) {
     if (keys.length) extraSections.push(`[${keystore.name}]\n${keys.join('\n')}`);
   }
 
-  return finishSurgeConversion(entries, skippedByProtocol, lines.length, extraSections);
+  return finishSurgeConversion(entries, skippedByProtocol, lines.length, extraSections, filteredByName);
+}
+
+function isInformationalProxyName(value) {
+  const name = String(value ?? '').trim();
+  return INFORMATIONAL_PROXY_NAME_PATTERN.test(name) || CLIENT_INSTRUCTION_PROXY_NAME_PATTERN.test(name);
 }
 
 function readSurgeParameter(text, name) {
@@ -133,7 +147,7 @@ function formatSurgeSection(section) {
   return `[${section.name}]\n${section.lines.join('\n').trim()}`;
 }
 
-function finishSurgeConversion(entries, skippedByProtocol, total, extraSections = []) {
+function finishSurgeConversion(entries, skippedByProtocol, total, extraSections = [], filteredByName = 0) {
   if (!entries.length) {
     const skipped = Object.entries(skippedByProtocol)
       .map(([protocol, count]) => `${protocol}: ${count}`)
@@ -153,6 +167,7 @@ function finishSurgeConversion(entries, skippedByProtocol, total, extraSections 
     total,
     converted: entries.length,
     skipped: total - entries.length,
+    filteredByName,
     skippedByProtocol,
   };
 }
@@ -211,6 +226,7 @@ function parseClashProxies(text) {
 function convertShareLinks(uris) {
   const entries = [];
   const skippedByProtocol = {};
+  let filteredByName = 0;
 
   for (const uri of uris) {
     const protocol = uri.slice(0, uri.indexOf(':')).toLowerCase();
@@ -220,22 +236,31 @@ function convertShareLinks(uris) {
         bump(skippedByProtocol, protocol);
         continue;
       }
+      if (isInformationalProxyName(entry.name)) {
+        filteredByName += 1;
+        continue;
+      }
       entries.push(entry);
     } catch {
       bump(skippedByProtocol, protocol);
     }
   }
 
-  return finishConversion(entries, skippedByProtocol, uris.length);
+  return finishConversion(entries, skippedByProtocol, uris.length, filteredByName);
 }
 
 function convertClashProxies(proxies) {
   const entries = [];
   const skippedByProtocol = {};
+  let filteredByName = 0;
 
   for (const [index, proxy] of proxies.entries()) {
     const protocol = String(proxy?.type ?? 'unknown').toLowerCase();
     try {
+      if (isInformationalProxyName(proxy?.name)) {
+        filteredByName += 1;
+        continue;
+      }
       const entry = parseClashProxy(proxy, index);
       if (!entry) {
         bump(skippedByProtocol, protocol);
@@ -247,10 +272,10 @@ function convertClashProxies(proxies) {
     }
   }
 
-  return finishConversion(entries, skippedByProtocol, proxies.length);
+  return finishConversion(entries, skippedByProtocol, proxies.length, filteredByName);
 }
 
-function finishConversion(entries, skippedByProtocol, total) {
+function finishConversion(entries, skippedByProtocol, total, filteredByName = 0) {
   const named = assignUniqueNames(entries);
   if (!named.length) {
     const skipped = Object.entries(skippedByProtocol)
@@ -271,6 +296,7 @@ function finishConversion(entries, skippedByProtocol, total) {
     total,
     converted: named.length,
     skipped: total - named.length,
+    filteredByName,
     skippedByProtocol,
   };
 }

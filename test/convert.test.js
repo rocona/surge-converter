@@ -393,6 +393,50 @@ unused-key = type=openssh-private-key, base64=dGVzdA==
   assert.doesNotMatch(result.fullConfig, /unused-key/);
 });
 
+test('filters subscription info and client notes without changing usable Surge nodes', () => {
+  const source = `[Proxy]
+剩余流量：123 GB = ss, stats.example.net, 443, encrypt-method=chacha20-ietf-poly1305, password=stats
+套餐到期：长期有效 = ss, stats.example.net, 443, encrypt-method=chacha20-ietf-poly1305, password=stats
+✅续费网址:https://example.net/renew = ss, stats.example.net, 443, encrypt-method=chacha20-ietf-poly1305, password=stats
+安卓-clashmeta客户端 = vmess, client.example.net, 443, username=00000000-0000-4000-8000-000000000000
+推荐ClashMI，Karing，小火箭客户端 = ss, note.example.net, 443, encrypt-method=chacha20-ietf-poly1305, password=note
+🇭🇰香港Ai/流媒体节点 = hysteria2, hk.example.net, 443, password=fixture-secret, sni=hk.example.net, skip-cert-verify=true, port-hopping=443,8443-8450, port-hopping-interval=30
+
+[Proxy Group]
+Proxy = select, 🇭🇰香港Ai/流媒体节点
+`;
+
+  const result = convertSubscription(source);
+
+  assert.equal(result.total, 6);
+  assert.equal(result.converted, 1);
+  assert.equal(result.skipped, 5);
+  assert.equal(result.filteredByName, 5);
+  assert.deepEqual(result.names, ['🇭🇰香港Ai/流媒体节点']);
+  assert.equal(
+    result.config,
+    '🇭🇰香港Ai/流媒体节点 = hysteria2, hk.example.net, 443, password=fixture-secret, sni=hk.example.net, skip-cert-verify=true, port-hopping=443,8443-8450, port-hopping-interval=30\n',
+  );
+});
+
+test('filters notices from Clash and share links while retaining real client-compatible nodes', () => {
+  const source = `proxies:
+  - {name: '剩余流量：100 GB', type: ss, server: stats.example.net, port: 443, cipher: aes-128-gcm, password: stats}
+  - {name: '若无HY节点-更换客户端即可', type: ss, server: stats.example.net, port: 443, cipher: aes-128-gcm, password: stats}
+  - {name: '🇺🇸美国HY2轻量-小火箭也能用HY', type: hysteria2, server: hy.example.net, port: 443, password: test-secret}
+`;
+  const clash = convertSubscription(source);
+  assert.equal(clash.filteredByName, 2);
+  assert.deepEqual(clash.names, ['🇺🇸美国HY2轻量-小火箭也能用HY']);
+
+  const links = convertSubscription([
+    'trojan://secret@note.example.net:443#%E5%A5%97%E9%A4%90%E5%88%B0%E6%9C%9F',
+    'trojan://secret@real.example.net:443#%F0%9F%87%B9%F0%9F%87%BC%E5%8F%B0%E6%B9%BE%E5%AE%B6%E5%AE%BD1-GPT',
+  ].join('\n'));
+  assert.equal(links.filteredByName, 1);
+  assert.deepEqual(links.names, ['🇹🇼台湾家宽1-GPT']);
+});
+
 test('prepends a Surge managed-config directive to full output', () => {
   const endpoint = buildManagedConfigUrl({
     protocol: 'https',
