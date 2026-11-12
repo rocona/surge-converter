@@ -96,6 +96,29 @@ test('converts supported Clash YAML proxies including VLESS', () => {
   assert.match(result.config, /SS Node = ss/);
 });
 
+test('preserves flag and emoji sequences in node names', () => {
+  const source = `proxies:
+  - name: "🇭🇰 Hong Kong"
+    type: socks5
+    server: hk.example.net
+    port: 1080
+  - name: "👨‍👩‍👧‍👦 Family"
+    type: socks5
+    server: family.example.net
+    port: 1080
+  - name: "🇯🇵 = Tokyo"
+    type: socks5
+    server: tokyo.example.net
+    port: 1080
+`;
+  const result = convertSubscription(source);
+
+  assert.deepEqual(result.names, ['🇭🇰 Hong Kong', '👨‍👩‍👧‍👦 Family', '🇯🇵 _ Tokyo']);
+  assert.match(result.config, /^🇭🇰 Hong Kong = socks5,/m);
+  assert.match(result.config, /^👨‍👩‍👧‍👦 Family = socks5,/m);
+  assert.match(result.config, /^🇯🇵 _ Tokyo = socks5,/m);
+});
+
 test('maps VLESS REALITY, Vision, WebSocket and gRPC share-link parameters', () => {
   const source = [
     'vless://11111111-2222-4333-8444-555555555555@reality.example.net:443?security=reality&pbk=test-public-key&sid=abcdef&sni=front.example.net&flow=xtls-rprx-vision#Reality',

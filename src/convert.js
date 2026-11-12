@@ -967,7 +967,7 @@ function safeText(value) {
 function safeName(value) {
   const text = String(value ?? '')
     .replace(/[\r\n\u0000]/g, ' ')
-    .replace(/[^\p{L}\p{N}._ ()+-]/gu, '_')
+    .replace(/[^\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\u200D\u{E0020}-\u{E007F}._ ()+-]/gu, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);
