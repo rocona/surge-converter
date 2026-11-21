@@ -4,13 +4,13 @@ import { convertSubscription } from '../src/convert.js';
 import { fetchSubscription, validateSourceUrl } from '../src/fetch-source.js';
 import { buildManagedConfigUrl, prependManagedConfig } from '../src/managed-config.js';
 
-function vmessLink(name = 'VMess WebSocket') {
+function vmessLink(name = 'VMess WebSocket', network = 'ws') {
   const payload = {
     add: 'vm.example.net',
     port: '443',
     id: '11111111-2222-4333-8444-555555555555',
     aid: '0',
-    net: 'ws',
+    net: network,
     host: 'cdn.example.net',
     path: '/tunnel',
     tls: 'tls',
@@ -56,7 +56,7 @@ test('decodes a Base64 Shadowsocks subscription and supports SIP002 credentials'
   assert.match(result.config, /obfs-host=cdn\.example\.net/);
 });
 
-test('converts supported Clash YAML proxies and skips VLESS', () => {
+test('converts Clash YAML including VLESS and filters it in legacy mode', () => {
   const source = `proxies:
   - name: Edge Vmess
     type: vmess
@@ -85,13 +85,13 @@ test('converts supported Clash YAML proxies and skips VLESS', () => {
     password: secret
 `;
   const result = convertSubscription(source);
-  assert.equal(result.converted, 2);
-  assert.equal(result.skipped, 1);
-  assert.deepEqual(result.skippedByProtocol, { vless: 1 });
+  assert.equal(result.converted, 3);
+  assert.equal(result.skipped, 0);
   assert.match(result.config, /Edge Vmess = vmess/);
   assert.match(result.config, /sni=edge\.example\.net/);
   assert.match(result.config, /ws-headers=Host:cdn\.example\.net/);
-  assert.doesNotMatch(result.config, /VLESS Node =/);
+  assert.match(result.config, /VLESS Node = vless/);
+  assert.deepEqual(convertSubscription(source, { legacy: true }).skippedByProtocol, { vless: 1 });
   assert.match(result.config, /SS Node = ss/);
 });
 
@@ -118,22 +118,23 @@ test('preserves flag and emoji sequences in node names', () => {
   assert.match(result.config, /^🇯🇵 _ Tokyo = socks5,/m);
 });
 
-test('skips VLESS share links as unsupported', () => {
+test('converts REALITY and WebSocket VLESS and skips unsupported transport', () => {
   const source = [
-    'vless://11111111-2222-4333-8444-555555555555@reality.example.net:443?security=reality&pbk=test-public-key&sid=abcdef&sni=front.example.net&flow=xtls-rprx-vision#Reality',
+    `vless://11111111-2222-4333-8444-555555555555@reality.example.net:443?security=reality&pbk=${Buffer.alloc(32, 1).toString('base64url')}&sid=abcdef&sni=front.example.net&flow=xtls-rprx-vision#Reality`,
     'vless://11111111-2222-4333-8444-555555555555@ws.example.net:443?type=ws&security=tls&host=cdn.example.net&path=%2Fvless#VLESS%20WS',
+    'vless://demo@example.net:443?type=kcp#Unsupported',
     vmessLink('Supported VMess'),
   ].join('\n');
   const result = convertSubscription(source);
 
-  assert.equal(result.total, 3);
-  assert.equal(result.converted, 1);
-  assert.equal(result.skipped, 2);
-  assert.deepEqual(result.skippedByProtocol, { vless: 2 });
+  assert.equal(result.total, 4);
+  assert.equal(result.converted, 3);
+  assert.deepEqual(result.skippedByProtocol, { vless: 1 });
   assert.match(result.config, /^Supported VMess = vmess/m);
-  assert.doesNotMatch(result.config, /= vless,/i);
+  assert.match(result.config, /^Reality = vless,.*flow=xtls-rprx-vision.*reality-short-id=abcdef/m);
+  assert.match(result.config, /^VLESS WS = vless,.*tls=true.*ws-path=\/vless.*ws-headers=Host:cdn\.example\.net/m);
   assert.throws(
-    () => convertSubscription(source.split('\n').slice(0, 2).join('\n')),
+    () => convertSubscription(source.split('\n').slice(0, 2).join('\n'), { legacy: true }),
     error => error.status === 422 && /vless: 2/i.test(error.message),
   );
 });
@@ -145,6 +146,59 @@ test('converts AnyTLS share links and preserves the reuse setting', () => {
 
   assert.equal(result.converted, 1);
   assert.match(result.config, /AnyTLS = anytls, anytls\.example\.net, 443, password=secret, sni=front\.example\.net, reuse=false, alpn=h2/);
+});
+
+test('maps VMess and Trojan HTTPUpgrade without downgrading legacy output to WebSocket', () => {
+  const links = [vmessLink('VMess Upgrade', 'httpupgrade'),
+    'trojan://demo@example.net:443?type=httpupgrade&host=cdn.example.net&path=%2Fup#Trojan',
+    vmessLink('Regular WS')].join('\n');
+  const yaml = `proxies:
+  - {name: VMess Upgrade, type: vmess, server: example.net, port: 443, uuid: 11111111-2222-4333-8444-555555555555, network: ws, ws-opts: {v2ray-http-upgrade: true, path: /up}}
+  - {name: Trojan Upgrade, type: trojan, server: example.net, port: 443, password: demo, network: httpupgrade, http-upgrade-opts: {host: cdn.example.net, path: /up}}
+  - {name: Regular WS, type: trojan, server: example.net, port: 443, password: demo, network: ws}
+`;
+  for (const source of [links, yaml, `[Proxy]\n${convertSubscription(links).config}`]) {
+    const result = convertSubscription(source);
+    assert.equal(result.converted, 3);
+    assert.equal(result.config.match(/ws-http-upgrade=true/g)?.length, 2);
+    assert.match(result.config, /ws-path=\/up, ws-headers=Host:cdn\.example\.net/);
+    const legacy = convertSubscription(source, { legacy: true });
+    assert.equal(legacy.converted, 1);
+    assert.match(legacy.config, /^Regular WS = /m);
+    assert.deepEqual(legacy.skippedByProtocol, { vmess: 1, trojan: 1 });
+  }
+});
+
+test('maps Hysteria2 authority port lists and keeps YAML certificate pins', () => {
+  const pin = 'a1'.repeat(32);
+  const links = convertSubscription([
+    `hy2://demo@[2001:db8::1]:443,5000-6000/?pinSHA256=${pin}#Port%20List`,
+    'hysteria2://demo@example.net:6000-5000#Bad',
+  ].join('\n'));
+  assert.match(links.config, /port-hopping="443;5000-6000"/);
+  assert.match(links.config, new RegExp(`server-cert-fingerprint-sha256=${pin}`));
+  assert.deepEqual(links.skippedByProtocol, { hysteria2: 1 });
+  const yaml = convertSubscription(`proxies:
+  - {name: Pinned, type: hysteria2, server: example.net, port: 443, password: demo, fingerprint: '${pin}'}
+  - {name: Invalid, type: hysteria2, server: example.net, port: 443, password: demo, pinSHA256: invalid}
+`);
+  assert.match(yaml.config, new RegExp(`server-cert-fingerprint-sha256=${pin}`));
+  assert.deepEqual(yaml.skippedByProtocol, { hysteria2: 1 });
+});
+
+test('maps VLESS gRPC and basic XHTTP, dropping combinations Surge cannot use', () => {
+  const shadow = Buffer.from('none:demo@example.net:443').toString('base64url');
+  const result = convertSubscription([
+    `vless://${shadow}?tls=1&obfs=grpc&path=service&remarks=Legacy%20Format`,
+    'vless://demo@example.net:443?type=xhttp&security=tls&path=%2Fx&host=cdn.example.net&mode=packet-up#XHTTP',
+    'vless://demo@example.net:443?type=xhttp&extra=%7B%22downloadSettings%22%3A%7B%7D%7D#Split',
+    'vless://demo@example.net:443?type=grpc#NoTLS',
+    'vless://demo@example.net:443?type=ws&security=tls&flow=xtls-rprx-vision#InvalidVision',
+  ].join('\n'));
+  assert.equal(result.converted, 2);
+  assert.deepEqual(result.skippedByProtocol, { vless: 3 });
+  assert.match(result.config, /^Legacy Format = vless,.*tls=true.*grpc=true, grpc-service-name=service/m);
+  assert.match(result.config, /^XHTTP = vless,.*xhttp-path=\/x, xhttp-host=cdn\.example\.net, xhttp-mode=packet-up/m);
 });
 
 test('converts current Clash proxy types and Hysteria 2 port hopping options', () => {
@@ -379,11 +433,12 @@ unused-key = type=openssh-private-key, base64=dGVzdA==
   const result = convertSubscription(source);
 
   assert.equal(result.total, 11);
-  assert.equal(result.converted, 9);
-  assert.equal(result.skipped, 2);
-  assert.deepEqual(result.skippedByProtocol, { vless: 1, ssr: 1 });
+  assert.equal(result.converted, 10);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(result.skippedByProtocol, { ssr: 1 });
   assert.equal(result.requiresFullConfig, true);
-  assert.doesNotMatch(result.config, /^VLESS =/m);
+  assert.match(result.config, /^VLESS = vless,/m);
+  assert.doesNotMatch(convertSubscription(source, { legacy: true }).config, /^VLESS =/m);
   assert.match(result.config, /^External = external/m);
   assert.doesNotMatch(result.config, /^SSR =/m);
   assert.match(result.fullConfig, /\[WireGuard office\]/);

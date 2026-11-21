@@ -11,13 +11,13 @@ const SUPPORTED_SS_METHODS = new Set([
 ]);
 const SURGE_PROXY_TYPES = new Set([
   'http', 'https', 'h2-connect', 'socks5', 'socks5-tls', 'ss', 'vmess', 'trojan', 'hysteria2', 'tuic', 'tuic-v5',
-  'snell', 'masque', 'anytls', 'trust-tunnel', 'ssh', 'wireguard', 'tailscale', 'external',
+  'snell', 'masque', 'anytls', 'trust-tunnel', 'ssh', 'wireguard', 'tailscale', 'external', 'vless',
 ]);
 // Match subscription notices, not real node labels mentioning supported clients or AI services.
 const INFORMATIONAL_PROXY_NAME_PATTERN = /(?:剩余流量|距离下次重置|套餐到期|到期时间|流量重置|当前网址|续费(?:网址|地址|链接)|官网(?:网址|地址)|订阅(?:信息|地址|链接)|流量查询)|^(?:remain(?:ing)?(?:\s+traffic)?|expired?|reset)(?:\b|[_：:])/iu;
 const CLIENT_INSTRUCTION_PROXY_NAME_PATTERN = /^(?:(?:推荐(?:clash|karing|小火箭|客户端)|surge客户端不支持|若无[^,]*更换客户端)|(?:安卓|android|windows|电脑|pc|ios|iphone|ipad|mac|小火箭|shadowrocket|clash(?:meta|verge)?)[^,]*客户端)/iu;
 
-export function convertSubscription(body) {
+export function convertSubscription(body, { legacy = false } = {}) {
   const raw = String(body ?? '').replace(/^\uFEFF/, '').trim();
   if (!raw) throw new ConversionError('The source returned an empty subscription.', 422);
 
@@ -27,13 +27,13 @@ export function convertSubscription(body) {
 
   for (const text of candidates) {
     const surgeConfig = parseSurgeProxySection(text);
-    if (surgeConfig) return convertSurgeProxies(surgeConfig);
+    if (surgeConfig) return convertSurgeProxies(surgeConfig, legacy);
 
     const proxies = parseClashProxies(text);
-    if (proxies) return convertClashProxies(proxies);
+    if (proxies) return convertClashProxies(proxies, legacy);
 
     const uris = text.match(URI_PATTERN) ?? [];
-    if (uris.length) return convertShareLinks(uris);
+    if (uris.length) return convertShareLinks(uris, legacy);
   }
 
   throw new ConversionError('Could not find supported share links or a Clash proxies list in the source.', 422);
@@ -67,7 +67,7 @@ function parseSurgeProxySection(text) {
   };
 }
 
-function convertSurgeProxies({ lines, sections }) {
+function convertSurgeProxies({ lines, sections }, legacy) {
   const entries = [];
   const skippedByProtocol = {};
   let filteredByName = 0;
@@ -84,7 +84,9 @@ function convertSurgeProxies({ lines, sections }) {
         filteredByName += 1;
         continue;
       }
-      if (!match || !SURGE_PROXY_TYPES.has(protocol)) {
+      if (!match || !SURGE_PROXY_TYPES.has(protocol) || (legacy && (
+        protocol === 'vless' || isTruthyParam(readSurgeParameter(match[3], 'ws-http-upgrade'))
+      ))) {
         bump(skippedByProtocol, protocol);
         continue;
       }
@@ -223,7 +225,7 @@ function parseClashProxies(text) {
   }
 }
 
-function convertShareLinks(uris) {
+function convertShareLinks(uris, legacy) {
   const entries = [];
   const skippedByProtocol = {};
   let filteredByName = 0;
@@ -232,7 +234,7 @@ function convertShareLinks(uris) {
     const protocol = uri.slice(0, uri.indexOf(':')).toLowerCase();
     try {
       const entry = parseShareLink(uri);
-      if (!entry) {
+      if (!entry || (legacy && requiresSurge6(entry))) {
         bump(skippedByProtocol, protocol);
         continue;
       }
@@ -249,7 +251,7 @@ function convertShareLinks(uris) {
   return finishConversion(entries, skippedByProtocol, uris.length, filteredByName);
 }
 
-function convertClashProxies(proxies) {
+function convertClashProxies(proxies, legacy) {
   const entries = [];
   const skippedByProtocol = {};
   let filteredByName = 0;
@@ -262,7 +264,7 @@ function convertClashProxies(proxies) {
         continue;
       }
       const entry = parseClashProxy(proxy, index);
-      if (!entry) {
+      if (!entry || (legacy && requiresSurge6(entry))) {
         bump(skippedByProtocol, protocol);
         continue;
       }
@@ -273,6 +275,10 @@ function convertClashProxies(proxies) {
   }
 
   return finishConversion(entries, skippedByProtocol, proxies.length, filteredByName);
+}
+
+function requiresSurge6(entry) {
+  return entry.type === 'vless' || entry.params.some(([key]) => key === 'ws-http-upgrade');
 }
 
 function finishConversion(entries, skippedByProtocol, total, filteredByName = 0) {
@@ -323,6 +329,7 @@ export function formatSurgeConfig(entries) {
 function parseShareLink(uri) {
   const protocol = uri.slice(0, uri.indexOf(':')).toLowerCase();
   if (protocol === 'vmess') return parseVmess(uri);
+  if (protocol === 'vless') return parseVless(uri);
   if (protocol === 'ss') return parseShadowsocks(uri);
   if (protocol === 'anytls') return parseAnyTls(uri);
   if (protocol === 'ssr') return null;
@@ -332,13 +339,121 @@ function parseShareLink(uri) {
   return null;
 }
 
+function parseVless(uri) {
+  let url = new URL(uri);
+  const query = url.searchParams;
+  let shadowrocket = false;
+  if (!url.username) {
+    const decoded = decodeBase64(url.hostname);
+    if (!decoded.startsWith('none:')) throw new Error('Invalid VLESS credentials');
+    url = new URL(`vless://${decoded.slice(5)}`);
+    shadowrocket = true;
+  }
+  const get = key => query.get(key);
+  const security = get('security') || (get('pbk') ? 'reality' : isTruthyParam(get('tls')) ? 'tls' : 'none');
+  const network = get('type') || (shadowrocket ? ({ websocket: 'ws', grpc: 'grpc' })[get('obfs')] || 'tcp' : 'tcp');
+  if (shadowrocket && get('obfs') && !['none', 'websocket', 'grpc'].includes(get('obfs'))) throw new Error('Unsupported VLESS obfuscation');
+  if ((get('headerType') && get('headerType') !== 'none') || get('downloadSettings') || get('ech')) throw new Error('Unsupported VLESS link options');
+  return makeProxy(get('remarks') || decodePart(new URL(uri).hash.slice(1)), 'vless', url.hostname, url.port, vlessParams({
+    id: decodePart(url.username), security, network, sni: get('sni') || get('peer'),
+    publicKey: get('pbk'), shortId: get('sid'), encryption: get('encryption'),
+    flow: get('flow') || (get('xtls') === '2' ? 'xtls-rprx-vision' : ''),
+    insecure: isTruthyParam(get('allowInsecure') ?? get('insecure')), pin: get('pcs') || get('pinSHA256'),
+    verifyName: get('vcn'), alpn: get('alpn'), path: get('path'), host: get('host') || get('obfsParam'),
+    mode: get('mode'), service: get('serviceName') || (shadowrocket ? get('path') : ''), authority: get('authority'),
+    extra: get('extra'),
+  }));
+}
+
+function parseClashVless(proxy, host, port) {
+  const network = String(proxy.network || 'tcp').toLowerCase();
+  const reality = proxy['reality-opts'];
+  const grpc = proxy['grpc-opts'] ?? {};
+  const xhttp = proxy['xhttp-opts'] ?? proxy['splithttp-opts'] ?? {};
+  if (proxy['ech-opts']?.enable || xhttp.downloadSettings || xhttp['download-settings'] ||
+      proxy['packet-encoding'] && proxy['packet-encoding'] !== 'xudp') {
+    throw new Error('Unsupported VLESS options');
+  }
+  const params = vlessParams({
+    id: proxy.uuid, network, security: reality ? 'reality' : truthy(proxy.tls) ? 'tls' : 'none',
+    publicKey: reality?.['public-key'], shortId: reality?.['short-id'], encryption: proxy.encryption,
+    flow: proxy.flow, sni: proxy.servername || proxy.sni, insecure: truthy(proxy['skip-cert-verify']),
+    pin: proxy['server-cert-fingerprint-sha256'] ?? proxy.fingerprint, alpn: proxy.alpn,
+    verifyName: proxy['server-cert-verify-name'], service: grpc['grpc-service-name'],
+    authority: grpc['grpc-authority'], mode: grpc['grpc-mode'] || xhttp.mode,
+    path: xhttp.path, host: xhttp.host, headers: xhttp.headers,
+    extra: xhttp.extra,
+  });
+  if (network === 'ws' || network === 'httpupgrade') addClashWebSocketParams(params, proxy, network);
+  return makeProxy(proxy.name, 'vless', host, port, params);
+}
+
+function vlessParams({ id, network, security, publicKey, shortId, encryption, flow, sni, insecure, pin, verifyName,
+  alpn, path, host, headers, mode, service, authority, extra }) {
+  network = String(network).toLowerCase();
+  security = String(security).toLowerCase();
+  const raw = ['tcp', 'raw'].includes(network);
+  const ws = ['ws', 'httpupgrade'].includes(network);
+  const grpc = network === 'grpc';
+  const xhttp = ['xhttp', 'splithttp'].includes(network);
+  const reality = security === 'reality';
+  if ((!raw && !ws && !grpc && !xhttp) || !['none', 'tls', 'reality'].includes(security) ||
+      (reality && ws) || (grpc && security === 'none') || (!reality && (publicKey || shortId))) {
+    throw new Error('Unsupported VLESS transport or security');
+  }
+  id = safeText(id);
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) && Buffer.byteLength(id) > 30) throw new Error('Invalid VLESS user ID');
+  const params = [['username', id]];
+  const encrypted = encryption && encryption !== 'none';
+  if (encrypted) {
+    if (!/^mlkem768x25519plus\.(?:native|xorpub|random)\.(?:0rtt|1rtt)\.[A-Za-z0-9_.-]+$/.test(encryption)) throw new Error('Unsupported VLESS encryption');
+    params.push(['encryption', encryption]);
+  }
+  if (flow) {
+    if (!['xtls-rprx-vision', 'xtls-rprx-vision-udp443'].includes(flow) || grpc || (!encrypted && (!raw || security === 'none'))) {
+      throw new Error('Unsupported VLESS flow combination');
+    }
+    params.push(['flow', flow]);
+  }
+  if (reality) {
+    const key = safeText(publicKey);
+    if (!sni || !/^[A-Za-z0-9_+/-]{43}=?$/.test(key) || Buffer.from(key, 'base64').length !== 32) throw new Error('Invalid REALITY settings');
+    params.push(['reality-public-key', key]);
+    if (shortId) {
+      if (!/^(?:[a-f0-9]{2}){1,8}$/i.test(shortId)) throw new Error('Invalid REALITY short ID');
+      params.push(['reality-short-id', shortId]);
+    }
+  } else if (security === 'tls') {
+    params.push(['tls', 'true']);
+    if (insecure) params.push(['skip-cert-verify', 'true']);
+    addCertificatePin(params, pin);
+    if (verifyName) params.push(['server-cert-verify-name', normalizeHost(verifyName)]);
+  }
+  if (security !== 'none') {
+    if (sni) params.push(['sni', normalizeHost(sni)]);
+    if (alpn) params.push(['alpn', safeText(Array.isArray(alpn) ? alpn.join(',') : alpn)]);
+  }
+  if (ws && (path !== undefined || host !== undefined)) addWebSocketParams(params, path, host, network);
+  if (grpc) {
+    if (mode && !['gun', 'multi'].includes(mode)) throw new Error('Unsupported VLESS gRPC mode');
+    params.push(['grpc', 'true'], ['grpc-service-name', service], ['grpc-authority', authority], ['grpc-mode', mode]);
+  }
+  if (xhttp) {
+    if (extra && Object.keys(typeof extra === 'string' ? JSON.parse(extra) : extra).length) throw new Error('Unsupported custom XHTTP settings');
+    if (mode && !['auto', 'packet-up', 'stream-up', 'stream-one'].includes(mode)) throw new Error('Unsupported VLESS XHTTP mode');
+    params.push(['xhttp', 'true'], ['xhttp-path', path], ['xhttp-host', host && normalizeHost(host)], ['xhttp-mode', mode]);
+    if (headers && Object.keys(headers).length) params.push(['xhttp-headers', normalizeHeaders(headers)]);
+  }
+  return params;
+}
+
 function parseVmess(uri) {
   const encoded = uri.slice(uri.indexOf('://') + 3);
   const settings = JSON.parse(decodeBase64(encoded));
   const host = normalizeHost(settings.add ?? settings.server);
   const port = normalizePort(settings.port);
   const network = String(settings.net || 'tcp').toLowerCase();
-  if (!['tcp', 'ws'].includes(network)) throw new Error('Unsupported VMess transport');
+  if (!['tcp', 'ws', 'httpupgrade'].includes(network)) throw new Error('Unsupported VMess transport');
 
   const params = [
     ['username', String(settings.id ?? settings.uuid ?? '')],
@@ -349,13 +464,7 @@ function parseVmess(uri) {
   if (tls) params.push(['tls', 'true']);
   const sni = settings.sni || (tls && network === 'tcp' ? settings.host : '');
   if (sni) params.push(['sni', normalizeHost(sni)]);
-  if (network === 'ws') {
-    params.push(['ws', 'true']);
-    const path = settings.path ? safeText(settings.path) : '';
-    if (path) params.push(['ws-path', path]);
-    const wsHost = settings.host ? normalizeHost(settings.host) : '';
-    if (wsHost) params.push(['ws-headers', `Host:${wsHost}`]);
-  }
+  if (network !== 'tcp') addWebSocketParams(params, settings.path, settings.host, network);
   if (truthy(settings.allowInsecure)) params.push(['skip-cert-verify', 'true']);
   const alpn = firstAlpn(settings.alpn);
   if (alpn) params.push(['alpn', alpn]);
@@ -440,14 +549,14 @@ function parseTrojan(uri) {
   const url = new URL(uri);
   const query = url.searchParams;
   const transport = String(query.get('type') || query.get('network') || 'tcp').toLowerCase();
-  if (!['tcp', 'ws'].includes(transport)) throw new Error('Unsupported Trojan transport');
+  if (!['tcp', 'ws', 'httpupgrade'].includes(transport)) throw new Error('Unsupported Trojan transport');
   if (query.get('security') === 'none' || query.get('tls') === 'false') throw new Error('Trojan requires TLS');
 
   const params = [['password', safeText(decodePart(url.password || url.username))]];
   const sni = query.get('sni') || query.get('peer') || query.get('servername');
   if (sni) params.push(['sni', normalizeHost(sni)]);
   if (isTruthyParam(query.get('allowInsecure') ?? query.get('insecure'))) params.push(['skip-cert-verify', 'true']);
-  if (transport === 'ws') addWebSocketParams(params, query.get('path') || url.pathname, query.get('host'));
+  if (transport !== 'tcp') addWebSocketParams(params, query.get('path') || url.pathname, query.get('host'), transport);
   const alpn = firstAlpn(query.get('alpn'));
   if (alpn) params.push(['alpn', alpn]);
 
@@ -455,7 +564,10 @@ function parseTrojan(uri) {
 }
 
 function parseHysteria2(uri) {
-  const url = new URL(uri);
+  // Separate a Hysteria port list before handing the authority to WHATWG URL.
+  const inlinePorts = uri.match(/^(\w+:\/\/(?:[^/?#@]*@)?(?:\[[^\]]+\]|[^:/?#@]+)):((?:\d+[-,])[-,\d]+)(?=[/?#]|$)/);
+  const firstPort = inlinePorts?.[2].split(/[-,]/)[0];
+  const url = new URL(inlinePorts ? `${inlinePorts[1]}:${firstPort}${uri.slice(inlinePorts[0].length)}` : uri);
   const query = url.searchParams;
   const password = decodePart(url.password || url.username);
   if (!password) throw new Error('Missing Hysteria2 password');
@@ -463,12 +575,7 @@ function parseHysteria2(uri) {
   const sni = query.get('sni') || query.get('peer') || query.get('servername');
   if (sni) params.push(['sni', normalizeHost(sni)]);
   if (isTruthyParam(query.get('insecure') ?? query.get('allowInsecure'))) params.push(['skip-cert-verify', 'true']);
-  const certificatePin = query.get('pinSHA256') || query.get('server-cert-fingerprint-sha256');
-  if (certificatePin) {
-    const fingerprint = certificatePin.replace(/:/g, '').toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('Invalid SHA-256 certificate fingerprint');
-    params.push(['server-cert-fingerprint-sha256', fingerprint]);
-  }
+  addCertificatePin(params, query.get('pinSHA256') || query.get('pcs') || query.get('server-cert-fingerprint-sha256'));
   const alpn = firstAlpn(query.get('alpn'));
   if (alpn) params.push(['alpn', alpn]);
 
@@ -479,7 +586,7 @@ function parseHysteria2(uri) {
     if (!obfsPassword) throw new Error('Missing Hysteria2 obfuscation password');
     params.push([obfs.toLowerCase() === 'salamander' ? 'salamander-password' : 'gecko-password', safeText(obfsPassword)]);
   }
-  const portHopping = normalizePortHopping(query.get('port-hopping') || query.get('ports') || query.get('mport'));
+  const portHopping = normalizePortHopping(inlinePorts?.[2] || query.get('port-hopping') || query.get('ports') || query.get('mport'));
   if (portHopping) params.push(['port-hopping', portHopping]);
   const hoppingInterval = query.get('port-hopping-interval') || query.get('hop_interval') || query.get('hop-interval');
   if (hoppingInterval) params.push(['port-hopping-interval', String(normalizePositiveInteger(hoppingInterval, 86400))]);
@@ -487,6 +594,13 @@ function parseHysteria2(uri) {
   if (downloadBandwidth) params.push(['download-bandwidth', normalizeBandwidth(downloadBandwidth)]);
 
   return makeProxy(decodePart(url.hash.slice(1)), 'hysteria2', normalizeHost(url.hostname), normalizePort(url.port || '443'), params);
+}
+
+function addCertificatePin(params, value) {
+  if (value === undefined || value === null || value === '') return;
+  const fingerprint = safeText(value).replace(/:/g, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw new Error('Invalid SHA-256 certificate fingerprint');
+  params.push(['server-cert-fingerprint-sha256', fingerprint]);
 }
 
 function parseTuic(uri) {
@@ -644,6 +758,7 @@ function parseClashProxy(proxy, index) {
   const host = normalizeHost(proxy.server);
   const port = normalizePort(proxy.port);
   const params = [];
+  if (protocol === 'vless') return parseClashVless(proxy, host, port);
 
   if (protocol === 'ss' || protocol === 'shadowsocks') {
     const method = safeText(proxy.cipher).toLowerCase();
@@ -739,20 +854,14 @@ function parseClashProxy(proxy, index) {
 
   if (protocol === 'vmess') {
     const network = String(proxy.network || 'tcp').toLowerCase();
-    if (!['tcp', 'ws'].includes(network)) throw new Error('Unsupported VMess transport');
+    if (!['tcp', 'ws', 'httpupgrade'].includes(network)) throw new Error('Unsupported VMess transport');
     params.push(['username', safeText(proxy.uuid)], ['vmess-aead', Number(proxy.alterId ?? 0) === 0 ? 'true' : 'false']);
     addVmessEncryption(params, proxy.cipher);
     if (truthy(proxy.tls)) params.push(['tls', 'true']);
     const sni = proxy.servername || (truthy(proxy.tls) && network === 'tcp' ? proxy['ws-opts']?.headers?.Host : '');
     if (sni) params.push(['sni', normalizeHost(sni)]);
     if (truthy(proxy['skip-cert-verify'])) params.push(['skip-cert-verify', 'true']);
-    if (network === 'ws') {
-      params.push(['ws', 'true']);
-      const ws = proxy['ws-opts'] ?? {};
-      if (ws.path) params.push(['ws-path', safeText(ws.path)]);
-      const wsHost = ws.headers?.Host || ws.headers?.host;
-      if (wsHost) params.push(['ws-headers', `Host:${normalizeHost(wsHost)}`]);
-    }
+    if (network !== 'tcp') addClashWebSocketParams(params, proxy, network);
     const alpn = firstAlpn(proxy.alpn);
     if (alpn) params.push(['alpn', alpn]);
     return makeProxy(proxy.name, 'vmess', host, port, params);
@@ -760,14 +869,11 @@ function parseClashProxy(proxy, index) {
 
   if (protocol === 'trojan') {
     const network = String(proxy.network || 'tcp').toLowerCase();
-    if (!['tcp', 'ws'].includes(network)) throw new Error('Unsupported Trojan transport');
+    if (!['tcp', 'ws', 'httpupgrade'].includes(network)) throw new Error('Unsupported Trojan transport');
     params.push(['password', safeText(proxy.password)]);
     if (proxy.sni || proxy.servername) params.push(['sni', normalizeHost(proxy.sni || proxy.servername)]);
     if (truthy(proxy['skip-cert-verify'])) params.push(['skip-cert-verify', 'true']);
-    if (network === 'ws') {
-      const ws = proxy['ws-opts'] ?? {};
-      addWebSocketParams(params, ws.path, ws.headers?.Host || ws.headers?.host);
-    }
+    if (network !== 'tcp') addClashWebSocketParams(params, proxy, network);
     const alpn = firstAlpn(proxy.alpn);
     if (alpn) params.push(['alpn', alpn]);
     return makeProxy(proxy.name, 'trojan', host, port, params);
@@ -777,6 +883,7 @@ function parseClashProxy(proxy, index) {
     params.push(['password', safeText(proxy.password || proxy.auth || proxy['auth-str'] || '')]);
     if (proxy.sni || proxy.servername) params.push(['sni', normalizeHost(proxy.sni || proxy.servername)]);
     if (truthy(proxy['skip-cert-verify'])) params.push(['skip-cert-verify', 'true']);
+    addCertificatePin(params, proxy['server-cert-fingerprint-sha256'] ?? proxy.pinSHA256 ?? proxy['pin-sha256'] ?? proxy.fingerprint);
     const alpn = firstAlpn(proxy.alpn);
     if (alpn) params.push(['alpn', alpn]);
     if (proxy.obfs) {
@@ -828,11 +935,21 @@ function parseClashProxy(proxy, index) {
   return null;
 }
 
-function addWebSocketParams(params, path, host) {
+function addClashWebSocketParams(params, proxy, network) {
+  const ws = (network === 'httpupgrade' ? proxy['http-upgrade-opts'] ?? proxy['httpupgrade-opts'] : null) ?? proxy['ws-opts'] ?? {};
+  if (ws['max-early-data'] || ws['early-data-header-name']) throw new Error('Unsupported WebSocket early data');
+  addWebSocketParams(params, ws.path, ws.headers?.Host || ws.headers?.host || ws.host,
+    truthy(ws['v2ray-http-upgrade']) ? 'httpupgrade' : network, ws.headers);
+}
+
+function addWebSocketParams(params, path, host, network, headers) {
   params.push(['ws', 'true']);
+  if (network === 'httpupgrade') params.push(['ws-http-upgrade', 'true']);
   const normalizedPath = path ? safeText(path) : '';
   if (normalizedPath && normalizedPath !== '/') params.push(['ws-path', normalizedPath]);
-  if (host) params.push(['ws-headers', `Host:${normalizeHost(host)}`]);
+  const extra = Object.entries(headers ?? {}).filter(([key]) => key.toLowerCase() !== 'host');
+  if (host) extra.unshift(['Host', normalizeHost(host)]);
+  if (extra.length) params.push(['ws-headers', normalizeHeaders(Object.fromEntries(extra))]);
 }
 
 function addVmessEncryption(params, value) {

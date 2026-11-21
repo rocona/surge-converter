@@ -46,7 +46,7 @@ const server = createServer(async (request, response) => {
 
   try {
     const body = await fetchSubscription(source);
-    const result = convertSubscription(body);
+    const result = convertSubscription(body, { legacy: requestUrl.searchParams.get('compat') === 'legacy' });
     const fullConfig = isHome;
     if (isNodeList && result.requiresFullConfig) {
       return sendText(response, 422, 'This source contains policies that require additional Surge sections. Use /?url=<subscription-url> for the complete configuration.');

@@ -4,12 +4,13 @@
 
 ## 支持范围
 
-- 分享链接：Shadowsocks、VMess、Trojan、Hysteria2、TUIC、AnyTLS。
+- 分享链接：Shadowsocks、VMess、VLESS、Trojan、Hysteria2、TUIC、AnyTLS。
 - Clash YAML：以上协议，以及 Snell、MASQUE、Trust Tunnel、SSH、WireGuard、H2 CONNECT、HTTP、SOCKS5、SOCKS5-TLS 节点。
 - Surge 配置：读取 `[Proxy]` 中 Surge 官方支持的节点类型；完整配置模式会保留 WireGuard/Tailscale 配置段和 SSH 私钥所需的 Keystore 项。
 - 转换阶段会过滤流量/到期/续费信息、客户端下载说明等非节点项；真实节点名称和 Surge 节点参数保持原样，不添加机场前缀。
-- Hysteria2 分享链接中的 `pinSHA256` 会映射到 Surge 的 `server-cert-fingerprint-sha256`，保留自签证书节点所需的证书校验信息。
-- VLESS 暂不支持，订阅中的 VLESS 节点会跳过。
+- Hysteria2 支持分享链接里的端口列表（如 `host:443,5000-6000`），也保留分享链接和 Clash YAML 中的 SHA-256 证书指纹。
+- VLESS 支持 RAW、WebSocket、HTTPUpgrade、gRPC 和基础 XHTTP，以及 Surge 支持的 TLS、REALITY 和 Vision 组合。mKCP、自定义 XHTTP `extra` 和分离下载设置暂不转换。分享链接里的 `fp` 不输出，使用客户端的默认握手指纹。
+- VMess、Trojan 的 HTTPUpgrade 和 VLESS 需要 Surge iOS 6.0+ 或 Mac 6.12+。仍在使用旧版时，在转换地址末尾加 `&compat=legacy`，跳过这些节点。
 - Surge 不支持的协议会跳过；节点字段或传输方式不能安全映射时也会跳过。源订阅没有可转换节点时，会返回 HTTP 422 和简短说明，不会返回空节点列表。
 
 节点能否连接仍取决于 Surge 版本及节点参数。转换器不修改节点信息，也不提供代理服务。
@@ -27,7 +28,7 @@
 https://你的-zeabur-域名/?url=https%3A%2F%2F订阅地址
 ```
 
-`url` 参数必须经过 URL 编码。根路径（`/?url=...`）返回完整 Surge 配置；`/node?url=...` 只返回节点定义。为了兼容旧用法，`/sub?url=...` 和 `/convert?url=...` 仍然是节点列表别名。`/healthz` 可用于健康检查。订阅源可为 HTTP(S) 地址，也可为支持的 `ss://`、`vmess://`、`anytls://`、`trojan://`、`hysteria2://` 或 `tuic://` 分享链接。VLESS 分享链接会被识别并按不支持协议跳过。
+`url` 参数必须经过 URL 编码。根路径（`/?url=...`）返回完整 Surge 配置；`/node?url=...` 只返回节点定义。为了兼容旧用法，`/sub?url=...` 和 `/convert?url=...` 仍然是节点列表别名。`/healthz` 可用于健康检查。订阅源可为 HTTP(S) 地址，也可为支持的 `ss://`、`vmess://`、`vless://`、`anytls://`、`trojan://`、`hysteria2://` 或 `tuic://` 分享链接。
 
 如果 Surge 节点引用了 WireGuard/Tailscale 配置段或 SSH 私钥，使用根路径生成完整配置；`/node` 不能承载这些附属配置，会返回 HTTP 422。
 
